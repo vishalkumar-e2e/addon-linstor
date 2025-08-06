@@ -43,6 +43,10 @@ def main():
     dst_dir = os.path.dirname(dst_path).strip()
     disk_id = dst_path.split(".")[-1].strip()
 
+    disk_xml = util.show_vm_disk(VM_ID, disk_id)
+    encryption_enabled = disk_xml.find(".//ENCRYPTION_ENABLED") is not None
+    encryption_passphrase = disk_xml.findtext(".//ENCRYPTION_PASSPHRASE", "qwerty$@1234")
+
     datastore = Datastore(util.show_ds(DS_ID))
     vm = Vm(util.show_vm(VM_ID))
 
@@ -58,7 +62,9 @@ def main():
         datastore.linstor_resource_group,
         prefer_node=dst_host,
         new_size=new_size,
-        allow_dependent_clone=True
+        allow_dependent_clone=True,
+        encryption_enabled=encryption_enabled,     
+        encryption_passphrase=encryption_passphrase
     )
     if not success:
         util.log_error("Cloning resource {} failed.".format(res.name))

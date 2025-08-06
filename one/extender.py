@@ -175,7 +175,9 @@ def clone(
         resource_group=None,
         prefer_node=None,
         new_size=None,
-        allow_dependent_clone=False):
+        allow_dependent_clone=False,
+        encryption_enabled=False,
+        encryption_passphrase="qwerty$@1234"):
     """
     Clones a resource to a new resource.
 
@@ -205,18 +207,39 @@ def clone(
     linstor_controllers = ",".join(resource.client.uri_list)
 
     if use_linstor_clone:
-        clone_res = resource.clone(clone_name, use_zfs_clone=allow_dependent_clone)
+        # NEW: Add encryption support for LINSTOR-native clone
+        clone_kwargs = {"use_zfs_clone": allow_dependent_clone}
+        if encryption_enabled:
+            clone_kwargs.update({
+                "layer_list": ["drbd", "luks", "storage"],
+                "passphrase": encryption_passphrase
+            })
+        clone_res = resource.clone(clone_name, **clone_kwargs)  # Modified line
         if prefer_node:
             try_diskful_activate(clone_res, prefer_node)
     else:
         vol_size_str = str(new_size) + "MiB" if new_size else str(resource.volumes[0].size) + "b"
-        clone_res = deploy(
-            linstor_controllers=linstor_controllers,
-            resource_name=clone_name,
-            vlm_size_str=vol_size_str,
-            resource_group=resource_group,
-            prefer_node=prefer_node
-        )
+        
+        # NEW: Handle encryption for dd-copy path
+        if encryption_enabled:
+            resource.execute(
+                "resource-definition", "create", clone_name,
+                "--layer-list", "drbd,luks,storage"
+            )
+            resource.execute(
+                "volume-definition", "create", clone_name,
+                "--passphrase", encryption_passphrase,
+                "--size", vol_size_str
+            )
+            clone_res = Resource(clone_name, resource.client.uri_list)
+        else:
+            clone_res = deploy(
+                linstor_controllers=linstor_controllers,
+                resource_name=clone_name,
+                vlm_size_str=vol_size_str,
+                resource_group=resource_group,
+                prefer_node=prefer_node
+            )
 
         # use copy source on the current primary node or on one with a disk, if all secondary
         copy_node = get_in_use_node(resource)
