@@ -70,7 +70,9 @@ def deploy(
         resource_name,
         vlm_size_str,
         resource_group=None,
-        prefer_node=None
+        prefer_node=None,
+        encryption_enabled=False,
+        encryption_passphrase="DEFAULT_PASSPHRASE"
 ):
     """
     Deploys resource depending on resource_group, deployment nodes or auto_place setting.
@@ -82,21 +84,61 @@ def deploy(
     :param Optional[str] prefer_node: Tries to place a diskful on this node(if autoplace)
     :return: Resource object of the new deployment
     :rtype: Resource
+    If encryption_enabled is True, create the resource definition with luks in the layer-list
+    and pass the passphrase for the volume creation.
     """
-    util.log_info("Deploying resource '{}' using resource group '{}', prefer node: {n}".format(
-        resource_name, resource_group, n=prefer_node))
-    resource = Resource.from_resource_group(
-        linstor_controllers,
-        resource_group,
-        resource_name,
-        [vlm_size_str],
-        definitions_only=bool(prefer_node)
-    )
-    if prefer_node:
-        resource.placement.redundancy = None  # force resource group values, default would be 2
-        try_diskful_activate(resource, prefer_node)
-        resource.autoplace()
-    return resource
+    util.log_info("Deploying resource '{}' using resource group '{}', prefer node: {}; encryption: {}".format(
+        resource_name, resource_group, prefer_node, encryption_enabled))
+
+    if not encryption_enabled:
+        resource = Resource.from_resource_group(
+            linstor_controllers,
+            resource_group,
+            resource_name,
+            [vlm_size_str],
+            definitions_only=bool(prefer_node)
+        )
+        if prefer_node:
+            resource.placement.redundancy = None
+            try_diskful_activate(resource, prefer_node)
+            resource.autoplace()
+        return resource
+
+    uri_list = MultiLinstor.controller_uri_list(linstor_controllers)
+    with MultiLinstor(uri_list) as lin:
+        rs = lin.resource_dfn_create(
+            name=resource_name,
+            external_name=resource_name,
+            layer_list=["drbd", "luks", "storage"],
+            resource_group=resource_group
+        )
+        if not lin.all_api_responses_no_error(rs):
+            raise LinstorError("Failed to create encrypted resource-definition {}: {}".format(
+                resource_name, lin.filter_api_call_response_errors(rs)))
+
+        size_kib = lin.parse_volume_size_to_kib(vlm_size_str)
+
+        storage_pool = None
+        if resource_group:
+            rsc_grp = lin.resource_group_list_raise(filter_by_resource_groups=[resource_group])
+            if rsc_grp.resource_groups and rsc_grp.resource_groups[0].select_filter.storage_pool_list:
+                storage_pool = rsc_grp.resource_groups[0].select_filter.storage_pool_list[0]  # Use first
+
+        passphrase = encryption_passphrase
+        vrs = lin.volume_dfn_create(
+            rsc_name=resource_name,
+            size=size_kib,
+            volume_nr=0,
+            storage_pool=storage_pool,
+            passphrase=passphrase
+        )
+        if not lin.all_api_responses_no_error(vrs):
+            raise LinstorError("Failed to create encrypted volume-definition {}: {}".format(
+                resource_name, lin.filter_api_call_response_errors(vrs)))
+
+    res = Resource(resource_name, uri=linstor_controllers)
+    res.autoplace()
+    return res
 
 
 def delete(resource_name, uri_list):
@@ -175,7 +217,9 @@ def clone(
         resource_group=None,
         prefer_node=None,
         new_size=None,
-        allow_dependent_clone=False):
+        allow_dependent_clone=False,
+        encryption_enabled=False,
+        encryption_passphrase="DEFAULT_PASSPHRASE"):
     """
     Clones a resource to a new resource.
 
@@ -192,6 +236,10 @@ def clone(
     util.log_info("Cloning from resource '{src}' to '{tgt}'.".format(src=resource.name, tgt=clone_name))
 
     use_linstor_clone = True
+
+    if encryption_enabled:
+        util.log_info("Encryption requested; forcing COPY mode (no native clone).")
+        use_linstor_clone = False
 
     if resource.resource_group_name and resource.resource_group_name != resource_group:
         # maybe check if resource group is using same storage pools
@@ -210,13 +258,24 @@ def clone(
             try_diskful_activate(clone_res, prefer_node)
     else:
         vol_size_str = str(new_size) + "MiB" if new_size else str(resource.volumes[0].size) + "b"
-        clone_res = deploy(
-            linstor_controllers=linstor_controllers,
-            resource_name=clone_name,
-            vlm_size_str=vol_size_str,
-            resource_group=resource_group,
-            prefer_node=prefer_node
-        )
+        if encryption_enabled:
+            clone_res = deploy(
+                linstor_controllers=linstor_controllers,
+                resource_name=clone_name,
+                vlm_size_str=vol_size_str,
+                resource_group=resource_group,
+                prefer_node=prefer_node,
+                encryption_enabled=True,
+                encryption_passphrase=encryption_passphrase
+            )
+        else:
+            clone_res = deploy(
+                linstor_controllers=linstor_controllers,
+                resource_name=clone_name,
+                vlm_size_str=vol_size_str,
+                resource_group=resource_group,
+                prefer_node=prefer_node
+            )
 
         # use copy source on the current primary node or on one with a disk, if all secondary
         copy_node = get_in_use_node(resource)
