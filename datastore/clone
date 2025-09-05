@@ -20,10 +20,28 @@ limitations under the License.
 from __future__ import print_function
 
 import sys
+import xml.etree.ElementTree as ET
 
 from one.extender import clone
 from linstor import Resource
 from one import consts, driver_action, util
+
+
+def get_encryption_params(driver):
+    encryption_enabled = False
+    encryption_passphrase = "DEFAULT_PASSPHRASE"
+
+    try:
+        image_root = ET.fromstring(driver.image.xmlstr)
+        template_elem = image_root.find("TEMPLATE")
+
+        if template_elem is not None:
+            encryption_enabled = template_elem.findtext("ENCRYPTION_ENABLED", encryption_enabled)
+            encryption_passphrase = template_elem.findtext("PASSPRHASE", encryption_passphrase)
+
+        return encryption_enabled, encryption_passphrase
+    except Exception:
+        return encryption_enabled, encryption_passphrase
 
 
 def main():
@@ -39,13 +57,17 @@ def main():
 
     clone_name = "{}-{}".format(consts.IMAGE_PREFIX, arg_image_id)
 
+    encryption_enabled, encryption_passphrase = get_encryption_params(driver)
+
     util.log_info("Cloning into new resource '{r}' into resource group '{p}'".format(
         r=clone_name, p=driver.datastore.linstor_resource_group)
     )
     success, _ = clone(
         res,
         clone_name,
-        driver.datastore.linstor_resource_group
+        driver.datastore.linstor_resource_group,
+        encryption_enabled=encryption_enabled,
+        encryption_passphrase=encryption_passphrase
     )
 
     util.log_info("Exiting datastore clone with " + "success." if success else "error.")
