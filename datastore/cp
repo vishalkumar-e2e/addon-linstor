@@ -20,9 +20,27 @@ limitations under the License.
 from __future__ import print_function
 
 import sys
+import xml.etree.ElementTree as ET
 
 from one.extender import get_device_path, deploy
 from one import consts, driver_action, util
+
+
+def get_encryption_params(driver):
+    encryption_enabled = False
+    encryption_passphrase = "DEFAULT_PASSPHRASE"
+
+    try:
+        image_root = ET.fromstring(driver.image.xmlstr)
+        template_elem = image_root.find("TEMPLATE")
+
+        if template_elem is not None:
+            encryption_enabled = template_elem.findtext("ENCRYPTION_ENABLED", encryption_enabled)
+            encryption_passphrase = template_elem.findtext("PASSPRHASE", encryption_passphrase)
+
+        return encryption_enabled, encryption_passphrase
+    except Exception:
+        return encryption_enabled, encryption_passphrase
 
 
 def main():
@@ -32,11 +50,15 @@ def main():
     driver = driver_action.DriverAction(arg_driver_action)
     resource_name = "{}-{}".format(consts.IMAGE_PREFIX, arg_image_id)
 
+    encryption_enabled, encryption_passphrase = get_encryption_params(driver)
+
     res = deploy(
         linstor_controllers=driver.datastore.linstor_controllers,
         resource_name=resource_name,
         vlm_size_str=driver.image.size + "MiB",
-        resource_group=driver.datastore.linstor_resource_group
+        resource_group=driver.datastore.linstor_resource_group,
+        encryption_enabled = encryption_enabled,
+        encryption_passphrase = encryption_passphrase
     )
 
     util.set_up_datastore(
