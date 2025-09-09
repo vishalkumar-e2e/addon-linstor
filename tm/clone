@@ -80,7 +80,7 @@ def main():
         datastore.linstor_resource_group,
         prefer_node=dst_host,
         new_size=new_size,
-        allow_dependent_clone=True,allow_dependent_clone=True,
+        allow_dependent_clone=True,
         encryption_enabled=encryption_enabled,
         encryption_passphrase=encryption_passphrase
     )
